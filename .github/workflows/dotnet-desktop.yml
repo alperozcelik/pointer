@@ -39,13 +39,14 @@ jobs:
         run: dotnet build .\Pointer.csproj --configuration ${{ matrix.configuration }} --no-restore
 
       # No test project or MSIX packaging project exists in this repository.
-      # Bundle the .NET runtime and native libraries into one Windows x64 executable.
+      # WinForms does not support trimming/Native AOT; compress the self-contained bundle instead.
       - name: Publish Release
         if: matrix.configuration == 'Release'
         run: >-
           dotnet publish .\Pointer.csproj --configuration Release
           --runtime win-x64 --self-contained true
           -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
           -p:DebugType=embedded
           --output .\artifacts\Pointer
 
