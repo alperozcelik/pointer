@@ -3,8 +3,6 @@ name: .NET Desktop
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'binary/**'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -50,20 +48,12 @@ jobs:
           -p:DebugType=embedded
           --output .\artifacts\Pointer
 
-      - name: Copy Release to binary folder
+      - name: Verify single executable
         if: matrix.configuration == 'Release'
         run: |
           $files = @(Get-ChildItem -LiteralPath .\artifacts\Pointer -Force)
           if ($files.Count -ne 1 -or $files[0].Name -ne 'Pointer.exe') {
             throw 'Publish output must contain only Pointer.exe.'
-          }
-          if (Test-Path -LiteralPath .\binary) {
-            Remove-Item -LiteralPath .\binary -Recurse -Force
-          }
-          New-Item -ItemType Directory -Path .\binary -Force | Out-Null
-          Copy-Item -LiteralPath .\artifacts\Pointer\Pointer.exe -Destination .\binary\Pointer.exe
-          if (-not (Test-Path -LiteralPath .\binary\Pointer.exe)) {
-            throw 'The published Pointer executable is missing.'
           }
 
       - name: Upload Release
@@ -74,20 +64,15 @@ jobs:
           path: artifacts\Pointer\
           if-no-files-found: error
 
-      - name: Upload binary folder
-        if: matrix.configuration == 'Release'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Pointer-binary
-          path: binary\
-          if-no-files-found: error
-
-  push-binaries:
+  publish-release:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: windows-latest
     permissions:
       contents: write
+    concurrency:
+      group: pointer-latest-release
+      cancel-in-progress: false
     defaults:
       run:
         shell: pwsh
@@ -97,39 +82,36 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Remove previous binaries
-        run: |
-          if (Test-Path -LiteralPath .\binary) {
-            Remove-Item -LiteralPath .\binary -Recurse -Force
-          }
-
-      - name: Download binary folder
+      - name: Download executable
         uses: actions/download-artifact@v4
         with:
-          name: Pointer-binary
-          path: binary
+          name: Pointer-Release
+          path: artifacts\Pointer
 
-      - name: Commit and push binaries
+      - name: Publish latest download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path -LiteralPath .\binary\Pointer.exe)) {
+          if (-not (Test-Path -LiteralPath .\artifacts\Pointer\Pointer.exe)) {
             throw 'The downloaded Pointer executable is missing.'
           }
-          git config user.name 'github-actions[bot]'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not configure Git user name.' }
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not configure Git user email.' }
-          git add --all -- binary
-          if ($LASTEXITCODE -ne 0) { throw 'Could not stage binaries.' }
-          git diff --cached --quiet
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host 'Binaries are unchanged; nothing to push.'
+          # Do not let a delayed build replace a newer main-branch download.
+          $head = gh api "repos/$env:GH_REPO/git/ref/heads/main" --jq '.object.sha'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not check the current main revision.' }
+          if ($head -ne '${{ github.sha }}') {
+            Write-Host 'Main has advanced; skipping this outdated release.'
             exit 0
           }
-          if ($LASTEXITCODE -ne 1) { throw 'Could not check staged changes.' }
-          git commit -m 'Update published binaries [skip ci]' -m 'Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not commit binaries.' }
-          git push origin HEAD:refs/heads/main
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Could not push binaries. Check branch rules and Actions write access. If main advanced, rerun the workflow on the latest revision.'
+          $releases = gh api --paginate "repos/$env:GH_REPO/releases?per_page=100" --jq '.[] | select(.tag_name == "latest") | .id'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list releases.' }
+          if (-not $releases) {
+            gh release create latest .\artifacts\Pointer\Pointer.exe --target '${{ github.sha }}' --title 'Latest Pointer' --notes 'Rolling Windows x64 build. Download Pointer.exe; no .NET installation required.' --latest
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create the latest release.' }
+          } else {
+            gh release upload latest .\artifacts\Pointer\Pointer.exe --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Could not update the executable asset.' }
+            gh release edit latest --latest
+            if ($LASTEXITCODE -ne 0) { throw 'Could not mark the release as latest.' }
           }
