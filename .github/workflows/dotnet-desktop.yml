@@ -39,16 +39,28 @@ jobs:
         run: dotnet build .\Pointer.csproj --configuration ${{ matrix.configuration }} --no-restore
 
       # No test project or MSIX packaging project exists in this repository.
-      # This framework-dependent package requires the .NET 10 Desktop Runtime.
+      # Bundle the .NET runtime and native libraries into one Windows x64 executable.
       - name: Publish Release
         if: matrix.configuration == 'Release'
-        run: dotnet publish .\Pointer.csproj --configuration Release --no-build --no-restore --output .\artifacts\Pointer
+        run: >-
+          dotnet publish .\Pointer.csproj --configuration Release
+          --runtime win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:DebugType=embedded
+          --output .\artifacts\Pointer
 
       - name: Copy Release to binary folder
         if: matrix.configuration == 'Release'
         run: |
+          $files = @(Get-ChildItem -LiteralPath .\artifacts\Pointer -Force)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'Pointer.exe') {
+            throw 'Publish output must contain only Pointer.exe.'
+          }
+          if (Test-Path -LiteralPath .\binary) {
+            Remove-Item -LiteralPath .\binary -Recurse -Force
+          }
           New-Item -ItemType Directory -Path .\binary -Force | Out-Null
-          Copy-Item -Path .\artifacts\Pointer\* -Destination .\binary -Recurse -Force
+          Copy-Item -LiteralPath .\artifacts\Pointer\Pointer.exe -Destination .\binary\Pointer.exe
           if (-not (Test-Path -LiteralPath .\binary\Pointer.exe)) {
             throw 'The published Pointer executable is missing.'
           }
